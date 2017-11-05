@@ -10,6 +10,9 @@
 #include <SPI.h>
 #include <SD.h>
 #include <SoftwareSerial.h>
+#include <TimeLib.h>
+#include <TimeAlarms.h>
+#include <DS3231.h>
 
 
 /******************************************************************
@@ -21,7 +24,7 @@
 // Dependiendo del tipo de sensor
 #define DHTTYPE DHT11
 
-#define SD_PIN 10  // SD Card CS pin
+#define SD_PIN 53  // SD Card CS pin 10 uno 53 mega
 #define TABLE_SIZE 8192
 
 char* db_name = "/db/logs.db";
@@ -33,11 +36,10 @@ struct LogEvent {
     float temperatura;
     float humedad;
     float indiceCalor;
+    String fechora;
 }
 logEvent;
 
-// The read and write handlers for using the SD Library
-// Also blinks the led while writing/reading
 void writer (unsigned long address, byte data) {
     digitalWrite(13, HIGH);
     dbFile.seek(address);
@@ -64,9 +66,9 @@ int id = 0;
 
 SoftwareSerial blueToothSerial(5,6);
 
+DS3231  rtc(SDA, SCL);
+
 void setup() {
-  pinMode(9, OUTPUT);
-  digitalWrite(9, HIGH);
   Serial.begin(9600);
   blueToothSerial.begin(9600);
   blueToothSerial.write("AT+NAME=HubSolar");
@@ -74,7 +76,7 @@ void setup() {
   // Comenzamos el sensor DHT
   dht.begin();
   // Comenzamos el lector sd
-  pinMode(13, OUTPUT);
+  pinMode(52, OUTPUT);
   digitalWrite(13, LOW);
 
   randomSeed(analogRead(0));
@@ -123,93 +125,116 @@ void setup() {
       Serial.println("DONE");
   }
   dbFile.close();
+
+  rtc.begin();
+  setSyncProvider(rtc.getUnixTime(rtc.getTime()));
+  Alarm.timerRepeat(1200, insertarRegistro);
 }
 
-boolean btListener = false;
-boolean usbListener = false;
-
+boolean lecturaListener = false;
+boolean insertListener = false;
+String request = "";
 void loop(){
-  if (blueToothSerial.available()){
-    String request = blueToothSerial.readString();
-    blueToothSerial.print(" BLUETHOOT:");
-    blueToothSerial.print(request);
-    String response ="";
+  if(id>999){
+    copiarLog();
+    borrarTodo();
+    imprimirDisponible("trgRegistroLLeno");
+  }
+  if (blueToothSerial.available() and !Serial.available()){
+    request = blueToothSerial.readString();
     switch(request.toInt()){
       case 0:
-        btListener = btListener?false:true;
+        lecturaListener = true;
         break;
       case 1:
         seleccionarTodoBT();
         break;
       case 2:
-        response = borrarTodo();
+        borrarTodo();
+        break;
+      case 3:
+        insertListener = true;
+        lecturaListener = true;
+        break;
+      case 4:
+        blueToothSerial.println(id);
+        break;
+      case 5:
+        copiarLog();
+        borrarTodo();
         break;
       default:
         break;
     }
-    blueToothSerial.print(response);
+    blueToothSerial.println(request);
   }
-  if (Serial.available()){
-    String request = Serial.readString();
-    Serial.print(" USB:");
-    Serial.println(request);
-    String response ="";
+  if (Serial.available() and !blueToothSerial.available()){
+    request = Serial.readString();
     switch(request.toInt()){
       case 0:
-        usbListener = usbListener?false:true;
+        lecturaListener = true;
         break;
       case 1:
         seleccionarTodoUSB();
         break;
       case 2:
-        response = borrarTodo();
+        borrarTodo();
+        Serial.println(0);
+        break;
+      case 3:
+        insertListener = true;
+        lecturaListener = true;
+        break;
+      case 4:
+        Serial.println(id);
+        break;
+      case 5:
+        copiarLog();
+        borrarTodo();
         break;
       default:
         break;
     }
-    Serial.println(response);
+    Serial.println(request);
   }
-
   
-  // Delay por segundo 
-  delay(1000*5);
-  // Leemos la humedad relativa
-  float h = dht.readHumidity();
-  // Leemos la temperatura en grados centÃ­grados (por defecto)
-  float t = dht.readTemperature();
- 
-  // Comprobamos si ha habido algÃºn error en la lectura
-  if (isnan(h) || isnan(t) ) {
-    Serial.println("Error obteniendo los datos del sensor DHT11");
-    return;
-  }
+  // Delay por segundo
+  Alarm.delay(1000);
+  if(lecturaListener or insertListener){
+    delay(2000);
+    // Leemos la humedad relativa
+    float h = dht.readHumidity();
+    // Leemos la temperatura en grados centÃ­grados (por defecto)
+    float t = dht.readTemperature();
+   
+    // Comprobamos si ha habido algÃºn error en la lectura
+    if (isnan(h) || isnan(t) ) {
+      lecturaListener = false;
+      insertListener = false;
+      Serial.println("Error obteniendo los datos del sensor DHT11");
+      return;
+    }
 
-  
-  // Calcular el Ã­ndice de calor en grados centÃ­grados
-  float hic = dht.computeHeatIndex(t, h, false);
-
-  insertarLog(h,t,hic);
-
-  if(btListener){
-    blueToothSerial.println(lecturaActual(h,t,hic));
-  }
-  if(usbListener){
-    Serial.println(lecturaActual(h,t,hic));
+    String fechora = String(rtc.getDateStr())+" "+String(rtc.getTimeStr());
+     
+    // Calcular el Ã­ndice de calor en grados centÃ­grados
+    float hic = dht.computeHeatIndex(t, h, false);
+    if(insertListener){
+      insertListener = false;
+      insertarLog(h,t,hic,fechora);
+    }
+    
+    if(lecturaListener){
+      lecturaListener = false;
+      imprimirDisponible(lecturaActual(h,t,hic,fechora));
+      imprimirDisponible(request);
+    }
+    
   }
 }
 
-String lecturaActual(float t,float h, float hic){
-  String resultado = "";
-  resultado += "Humedad: ";
-  resultado += h;
-  resultado += " %\t";
-  resultado += "Temperatura: ";
-  resultado += t;
-  resultado += " *C ";
-  resultado += "Ã�ndice de calor: ";
-  resultado += hic;
-  resultado += " *C ";
-  return resultado;
+String lecturaActual(float t,float h, float hic,String fechora){
+  return fechora+" Humedad: "+String(h)+" %\tTemperatura: "+String(t)+" *C Ã�ndice de calor: "+String(hic)+" *C ";
 }
 
 void printError(EDB_Status err)
@@ -230,13 +255,13 @@ void printError(EDB_Status err)
   }
 }
 
-void insertarLog(float t,float h, float hic){
-  String resultado = "Ingresado";
+void insertarLog(float t,float h, float hic,String fechora){
   dbFile = SD.open(db_name, FILE_WRITE);
   logEvent.id = id;
   logEvent.temperatura = t;
   logEvent.humedad = h;
   logEvent.indiceCalor = hic;
+  logEvent.fechora = fechora;
   EDB_Status result = db.appendRec(EDB_REC logEvent);
   if (result != EDB_OK){
     printError(result);
@@ -245,7 +270,7 @@ void insertarLog(float t,float h, float hic){
     id = id+1;
   }
   dbFile.close();
-  return resultado +" id: "+String(id);
+  return "Ingresado id: "+String(id);
 }
 
 void seleccionarTodoUSB(){
@@ -260,6 +285,8 @@ void seleccionarTodoUSB(){
       Serial.print(logEvent.humedad);
       Serial.print(";");
       Serial.print(logEvent.indiceCalor);
+      Serial.print(";");
+      Serial.print(logEvent.fechora);
       Serial.println(";");
     }
     else printError(result);
@@ -278,6 +305,8 @@ void seleccionarTodoBT(){
       blueToothSerial.print(logEvent.humedad);
       blueToothSerial.print(";");
       blueToothSerial.print(logEvent.indiceCalor);
+      blueToothSerial.print(";");
+      blueToothSerial.print(logEvent.fechora);
       blueToothSerial.println(";");
     }
     else printError(result);
@@ -285,13 +314,39 @@ void seleccionarTodoBT(){
   dbFile.close();
 }
 
-String borrarTodo(){
-  String resultado = "eliminado";
+void borrarTodo(){
   dbFile = SD.open(db_name, FILE_WRITE);
   db.clear();
   id = 0;
   dbFile.close();
-  return resultado;
+}
+
+void imprimirDisponible(String msg){
+  if (Serial){
+    Serial.println(msg);
+  }
+  if (blueToothSerial) {
+    blueToothSerial.println(msg);
+  }
+}
+
+void insertarRegistro(){
+  insertListener = true;
+  imprimirDisponible("cronInsertarRegistro");
+}
+
+void copiarLog(){
+  String nombre = "/db/log"+String(day())+String(month())+String(year())+"-"+String(hour())+":"+String(minute())+":"+String(second())+".txt";
+  dbFile = SD.open(db_name, FILE_READ);
+  if (SD.exists(nombre)) {
+    SD.remove(nombre);
+  }
+  File myFileOut = SD.open(nombre, FILE_WRITE);
+  while (dbFile.available()) {
+    myFileOut.write(dbFile.read());
+  }
+  dbFile.close();
+  myFileOut.close();
 }
 
 
