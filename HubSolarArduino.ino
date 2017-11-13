@@ -8,8 +8,8 @@
 #include <TimeAlarms.h>
 #include <DS3231.h>
 
-SoftwareSerial blueToothSerial(5,6);
-DS3231  rtc(A4,A5);
+SoftwareSerial blueToothSerial(6,5);
+DS3231  rtc(SDA, SCL);
 
 char* db_name = "/db/logs.db";
 File dbFile;
@@ -19,8 +19,8 @@ struct LogEvent {
     int id;
     int temperatura;
     int humedad;
-    //float indiceCalor;
-    String fechora;
+    char fecha[11];
+    char hora[9];
 }
 logEvent;
 
@@ -59,9 +59,10 @@ void setup() {
     Serial.println("No SD-card.");
     return;
   }
+  // SD.remove(db_name);
   // Check dir for db files
   if (!SD.exists("/db")) {
-    Serial.println("Dir for Db files does not exist, creating...");
+    Serial.println("Direccion inexistente, creando...");
     SD.mkdir("/db");
   }
   if (SD.exists(db_name)) {
@@ -76,19 +77,19 @@ void setup() {
       EDB_Status result = db.open(0);
       if (result == EDB_OK) {
         id = db.count(); //ultima inserccion en la tabla
-        Serial.print("Cantidad actual ");
-        Serial.println(id);
+        //Serial.print("Cantidad actual ");
+        //Serial.println(id);
       } else {
-        Serial.println("ERROR No se a encontrado"+String(db_name)+". Creando...");
+        //Serial.println("ERROR No se a encontrado"+String(db_name)+". Creando...");
         db.create(0, 8192, (unsigned int)sizeof(logEvent));
         return;
       }
     } else {
-      Serial.println("No pudo abrirse el archivo " + String(db_name));
+      //Serial.println("No pudo abrirse el archivo " + String(db_name));
       return;
     }
   } else {
-      Serial.print("Creando la tabla... ");
+      //Serial.print("Creando la tabla... ");
       // create table at with starting address 0
       dbFile = SD.open(db_name, FILE_WRITE);
       db.create(0, 8192, (unsigned int)sizeof(logEvent));
@@ -97,12 +98,13 @@ void setup() {
   dbFile.close();
 
   rtc.begin();
-  setSyncProvider(rtc.getUnixTime(rtc.getTime()));
+  setTime(hour(),minute(),second(),month(),day(),year());
   Alarm.timerRepeat(900, insertarRegistro);
 }
 
 boolean lecturaListener = false;
 boolean insertListener = false;
+boolean printUSB = false;
 void loop(){
   if(id>=8192){
     copiarLog();
@@ -110,6 +112,7 @@ void loop(){
     imprimirDisponibleLN("trgRegistroLLeno");
   }
   if (blueToothSerial.available() and !Serial.available()){
+    printUSB = false;
     switch(blueToothSerial.readString().toInt()){
       case 0:
         lecturaListener = true;
@@ -123,20 +126,20 @@ void loop(){
         break;
       case 3:
         insertListener = true;
-        lecturaListener = true;
         break;
       case 4:
         blueToothSerial.println(id);
+        blueToothSerial.println("COUNT");
         break;
       case 5:
         salvarLog();
-        lecturaListener = true;
         break;
       default:
         break;
     }
   }
   if (Serial.available() and !blueToothSerial.available()){
+    printUSB = true;
     switch(Serial.readString().toInt()){
       case 0:
         lecturaListener = true;
@@ -150,14 +153,13 @@ void loop(){
         break;
       case 3:
         insertListener = true;
-        lecturaListener = true;
         break;
       case 4:
         Serial.println(id);
+        Serial.println("COUNT");
         break;
       case 5:
         salvarLog();
-        lecturaListener = true;
         break;
       default:
         break;
@@ -177,21 +179,26 @@ void loop(){
       imprimirDisponibleLN("ERROR "+String(SimpleDHTErrSuccess));
       return;
     }
-    String fechora = String(rtc.getDateStr())+" "+String(rtc.getTimeStr());
+    char fecha[11];
+    String fechastr= rtc.getDateStr();
+    fechastr.toCharArray(fecha,11);
+    char hora[9];
+    String horastr= rtc.getTimeStr();
+    horastr.toCharArray(hora,9);
     
     if(insertListener){
       insertListener = false;
-      insertarLog((int)humidity,(int)temperature,fechora);
+      insertarLog((int)temperature,(int)humidity,fecha,hora);
     }
     if(lecturaListener){
       lecturaListener = false;
-      imprimirDisponibleLN(lecturaActual((int)humidity,(int)temperature,fechora));
+      imprimirDisponibleLN(lecturaActual((int)temperature,(int)humidity,fecha,hora));
     }
   }
 }
 
-String lecturaActual(int t,int h,String fechora){
-  return fechora+" Humedad: "+String(h)+" %\tTemperatura: "+String(t)+" *C";
+String lecturaActual(int t,int h,char fecha[],char hora[]){
+  return String(fecha)+" "+String(hora)+" Humedad: "+String(h)+" %\tTemperatura: "+String(t)+" *C";
 }
 
 void printError(EDB_Status err)
@@ -212,12 +219,17 @@ void printError(EDB_Status err)
   }
 }
 
-void insertarLog(int t,int h,String fechora){
+void copyIntArray(char *dst, char *src, int nb){
+  while(nb--) *dst++ = *src++;
+}
+
+void insertarLog(int t,int h,char fecha[],char hora[]){
   dbFile = SD.open(db_name, FILE_WRITE);
   logEvent.id = id;
   logEvent.temperatura = t;
   logEvent.humedad = h;
-  logEvent.fechora = fechora;
+  copyIntArray(logEvent.fecha,fecha,11);
+  copyIntArray(logEvent.hora,hora,9);
   EDB_Status result = db.appendRec(EDB_REC logEvent);
   if (result != EDB_OK){
     printError(result);
@@ -226,7 +238,7 @@ void insertarLog(int t,int h,String fechora){
     id = id+1;
   }
   dbFile.close();
-  return "Ingresado id: "+String(id);
+  imprimirDisponibleLN("INSERT");
 }
 
 void seleccionarTodo(){
@@ -240,12 +252,15 @@ void seleccionarTodo(){
       imprimirDisponible(";");
       imprimirDisponible(String(logEvent.humedad));
       imprimirDisponible(";");
-      imprimirDisponible(logEvent.fechora);
+      imprimirDisponible(String(logEvent.fecha));
+      imprimirDisponible(";");
+      imprimirDisponible(String(logEvent.hora));
       imprimirDisponibleLN(";");
     }
     else printError(result);
   }
   dbFile.close();
+  imprimirDisponibleLN("FIN");
 }
 
 void borrarTodo(){
@@ -253,17 +268,18 @@ void borrarTodo(){
   db.clear();
   id = 0;
   dbFile.close();
+  imprimirDisponibleLN("DELETE");
 }
 
 void imprimirDisponible(String msg){
-  if (Serial){
+  if (printUSB){
     Serial.print(msg);
   } else {
     blueToothSerial.print(msg);
   }
 }
 void imprimirDisponibleLN(String msg){
-  if (Serial){
+  if (printUSB){
     Serial.println(msg);
   } else {
     blueToothSerial.println(msg);
@@ -287,10 +303,12 @@ void copiarLog(){
   }
   dbFile.close();
   myFileOut.close();
+  imprimirDisponibleLN("COPY");
 }
 
 void salvarLog(){
   copiarLog();
   borrarTodo();
+  imprimirDisponibleLN("BACKUP");
 }
 
