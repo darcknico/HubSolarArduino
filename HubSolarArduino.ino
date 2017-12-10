@@ -207,14 +207,14 @@ void printError(EDB_Status err)
   switch (err)
   {
     case EDB_OUT_OF_RANGE:
-      Serial.println("Registro fuera de rango \n");
+      imprimirDisponibleLN("Registro fuera de rango \n");
       break;
     case EDB_TABLE_FULL:
-      Serial.println("Tabla llena");
+      imprimirDisponibleLN("Tabla llena");
       break;
     case EDB_OK:
     default:
-      Serial.println("OK");
+      imprimirDisponibleLN("OK");
       break;
   }
 }
@@ -293,11 +293,14 @@ void insertarRegistro(){
 
 void copiarLog(){
   String nombre = "/db/log"+String(day())+String(month())+String(year())+"-"+String(hour())+":"+String(minute())+":"+String(second())+".txt";
+  char* dir;
+  nombre.toCharArray(dir,29);
   dbFile = SD.open(db_name, FILE_READ);
-  if (SD.exists(nombre)) {
-    SD.remove(nombre);
+  if (SD.exists(dir)) {
+    SD.remove(dir);
   }
-  File myFileOut = SD.open(nombre, FILE_WRITE);
+
+  File myFileOut = SD.open(dir, FILE_WRITE);
   while (dbFile.available()) {
     myFileOut.write(dbFile.read());
   }
