@@ -7,11 +7,15 @@
 #include <TimeLib.h>
 #include <TimeAlarms.h>
 #include <DS3231.h>
+#include <Wire.h>
 
 SoftwareSerial blueToothSerial(6,5);
-DS3231  rtc(SDA, SCL);
+DS3231  rtc;
+bool Century=false;
+bool h12;
+bool PM;
 
-char* db_name = "/db/logs.db";
+const char db_name[] = "/db/logs.db";
 File dbFile;
 
 // Definicion de la tabla.
@@ -44,18 +48,19 @@ byte reader (unsigned long address) {
 EDB db(&writer, &reader);
 SimpleDHT11 dht11;
 int id = 0;
-
+int cronInsertarRegistro = 300;
 void setup() {
+  Wire.begin();
   Serial.begin(9600);
   blueToothSerial.begin(9600);
   
   // Comenzamos el lector sd
-  pinMode(10, OUTPUT);
+  pinMode(13, OUTPUT);
   digitalWrite(13, LOW);
 
   randomSeed(analogRead(0));
 
-  if (!SD.begin(10)) {
+  if (!SD.begin(53)) {
     Serial.println("No SD-card.");
     return;
   }
@@ -96,15 +101,20 @@ void setup() {
   }
   Serial.println("DONE");
   dbFile.close();
-
-  rtc.begin();
-  setTime(hour(),minute(),second(),month(),day(),year());
-  Alarm.timerRepeat(900, insertarRegistro);
+  while (!Serial) ;
+  String fechastr= String(rtc.getDate())+"."+String(rtc.getMonth(Century))+"."+String(rtc.getYear());
+  String horastr= String(rtc.getHour(h12, PM))+":"+String(rtc.getMinute())+":"+String(rtc.getSecond());
+  Serial.println(fechastr + " " +horastr);
+  setTime(rtc.getHour(h12, PM),rtc.getMinute(),rtc.getSecond(),rtc.getMonth(Century),rtc.getDate(),rtc.getYear());
+  //Alarm.timerRepeat(300, insertarRegistro);
+  Alarm.timerOnce(cronInsertarRegistro, insertarRegistro);
+  Alarm.timerOnce(10, insertarRegistroOnce);
 }
 
 boolean lecturaListener = false;
 boolean insertListener = false;
 boolean printUSB = false;
+int dthIntento = 0;
 void loop(){
   if(id>=8192){
     copiarLog();
@@ -113,7 +123,8 @@ void loop(){
   }
   if (blueToothSerial.available() and !Serial.available()){
     printUSB = false;
-    switch(blueToothSerial.readString().toInt()){
+    int opt = blueToothSerial.readString().toInt();
+    switch(opt){
       case 0:
         lecturaListener = true;
         break;
@@ -128,19 +139,22 @@ void loop(){
         insertListener = true;
         break;
       case 4:
-        blueToothSerial.println(id);
-        blueToothSerial.println("COUNT");
+        blueToothSerial.println("COUNT "+String(id));
         break;
       case 5:
         salvarLog();
         break;
       default:
+        if(opt>=60){
+          cronInsertarRegistro = opt;
+          blueToothSerial.println("CRON");
+        }
         break;
     }
-  }
-  if (Serial.available() and !blueToothSerial.available()){
+  } else if (Serial.available() and !blueToothSerial.available()){
     printUSB = true;
-    switch(Serial.readString().toInt()){
+    int opt = Serial.readString().toInt();
+    switch(opt){
       case 0:
         lecturaListener = true;
         break;
@@ -155,13 +169,16 @@ void loop(){
         insertListener = true;
         break;
       case 4:
-        Serial.println(id);
-        Serial.println("COUNT");
+        Serial.println("COUNT "+String(id));
         break;
       case 5:
         salvarLog();
         break;
       default:
+        if(opt>=60){
+          cronInsertarRegistro = opt;
+          Serial.println("CRON");
+        }
         break;
     }
   }
@@ -174,16 +191,24 @@ void loop(){
     byte humidity = 0;
     int err = SimpleDHTErrSuccess;
     if ((err = dht11.read(2, &temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
-      lecturaListener = false;
-      insertListener = false;
-      imprimirDisponibleLN("ERROR "+String(SimpleDHTErrSuccess));
+      if (dthIntento>5){
+        lecturaListener = false;
+        insertListener = false;
+        dthIntento = 0;
+        imprimirDisponibleLN("FIN");
+      } else {
+        dthIntento = dthIntento + 1;
+        imprimirDisponibleLN("DTH ERROR "+String(SimpleDHTErrSuccess));
+      }
       return;
+    } else {
+      dthIntento = 0;
     }
     char fecha[11];
-    String fechastr= rtc.getDateStr();
+    String fechastr= String(rtc.getDate())+"."+String(rtc.getMonth(Century))+"."+String(rtc.getYear());
     fechastr.toCharArray(fecha,11);
     char hora[9];
-    String horastr= rtc.getTimeStr();
+    String horastr= String(rtc.getHour(h12, PM))+":"+String(rtc.getMinute())+":"+String(rtc.getSecond());
     horastr.toCharArray(hora,9);
     
     if(insertListener){
@@ -203,7 +228,7 @@ String lecturaActual(int t,int h,char fecha[],char hora[]){
 
 void printError(EDB_Status err)
 {
-  Serial.print("ERROR: ");
+  imprimirDisponibleLN("SD ERROR: "+String(err));
   switch (err)
   {
     case EDB_OUT_OF_RANGE:
@@ -224,6 +249,16 @@ void copyIntArray(char *dst, char *src, int nb){
 }
 
 void insertarLog(int t,int h,char fecha[],char hora[]){
+  imprimirDisponible(String(id));
+  imprimirDisponible(";");
+  imprimirDisponible(String(t));
+  imprimirDisponible(";");
+  imprimirDisponible(String(h));
+  imprimirDisponible(";");
+  imprimirDisponible(String(fecha));
+  imprimirDisponible(";");
+  imprimirDisponible(String(hora));
+  imprimirDisponibleLN(";");
   dbFile = SD.open(db_name, FILE_WRITE);
   logEvent.id = id;
   logEvent.temperatura = t;
@@ -289,6 +324,12 @@ void imprimirDisponibleLN(String msg){
 void insertarRegistro(){
   insertListener = true;
   imprimirDisponibleLN("cronInsertarRegistro");
+  Alarm.timerOnce(cronInsertarRegistro, insertarRegistro);
+}
+
+void insertarRegistroOnce(){
+  insertListener = true;
+  imprimirDisponibleLN("cronInsertarRegistro");
 }
 
 void copiarLog(){
@@ -310,6 +351,7 @@ void copiarLog(){
 }
 
 void salvarLog(){
+  seleccionarTodo();
   copiarLog();
   borrarTodo();
   imprimirDisponibleLN("BACKUP");
