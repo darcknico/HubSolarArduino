@@ -8,13 +8,14 @@
 #include <TimeAlarms.h>
 #include <DS3231.h>
 #include <Wire.h>
+#include <Arduino.h>
+#include <U8g2lib.h>
 
-SoftwareSerial blueToothSerial(6,5);
-DS3231  rtc;
-bool Century=false;
-bool h12;
-bool PM;
+SoftwareSerial blueToothSerial(63,62);
 
+#include "ClassReloj.h"
+#include "ClassCorriente.h"
+#include "ClassBarometro.h"
 const char db_name[] = "/db/logs.db";
 File dbFile;
 
@@ -43,6 +44,10 @@ byte reader (unsigned long address) {
     digitalWrite(13, LOW);
     return b;
 }
+
+//SETUP OLED
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+String ultimaAccion = "";
 
 // Creamos un objecto EDB con los manejadores write y reader
 EDB db(&writer, &reader);
@@ -102,13 +107,33 @@ void setup() {
   Serial.println("DONE");
   dbFile.close();
   while (!Serial) ;
-  String fechastr= String(rtc.getDate())+"."+String(rtc.getMonth(Century))+"."+String(rtc.getYear());
-  String horastr= String(rtc.getHour(h12, PM))+":"+String(rtc.getMinute())+":"+String(rtc.getSecond());
+  Reloj.setup();
+  String fechastr= Reloj.fecha(".");
+  String horastr= Reloj.hora(":");
   Serial.println(fechastr + " " +horastr);
-  setTime(rtc.getHour(h12, PM),rtc.getMinute(),rtc.getSecond(),rtc.getMonth(Century),rtc.getDate(),rtc.getYear());
+  
   //Alarm.timerRepeat(300, insertarRegistro);
   Alarm.timerOnce(cronInsertarRegistro, insertarRegistro);
   Alarm.timerOnce(10, insertarRegistroOnce);
+  u8g2.begin();
+  Corriente.setup();
+  ultimaAccion = "["+Reloj.hora()+"] INICIO";
+  Barometro.setup();
+}
+
+void draw(void) {
+  String drawTemperatura = "T= "+String(rtc.getTemperature())+" BD= "+String(id);
+  String drawFecha = Reloj.fecha()+" "+Reloj.hora();
+  String drawBarometro = "hPa= "+String(Barometro.presion())+" Alt= "+String(Barometro.altitud());
+  u8g2.clearBuffer();          // clear the internal memory
+  u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
+  u8g2.drawStr(0,12,drawFecha.c_str());
+  u8g2.drawStr(0,24,drawTemperatura.c_str());
+  u8g2.drawStr(0,36,Corriente.toString().c_str());
+  u8g2.drawStr(0,48,drawBarometro.c_str());
+  u8g2.drawStr(0,60,ultimaAccion.c_str());
+  u8g2.sendBuffer();          // transfer internal memory to the display
+
 }
 
 boolean lecturaListener = false;
@@ -120,6 +145,7 @@ void loop(){
     copiarLog();
     borrarTodo();
     imprimirDisponibleLN("trgRegistroLLeno");
+    ultimaAccion = "["+Reloj.hora()+"] trgRegistroLLeno";
   }
   if (blueToothSerial.available() and !Serial.available()){
     printUSB = false;
@@ -182,7 +208,7 @@ void loop(){
         break;
     }
   }
-  
+  draw();
   // Delay por segundo
   Alarm.delay(1000);
   if(lecturaListener or insertListener){
@@ -204,11 +230,11 @@ void loop(){
     } else {
       dthIntento = 0;
     }
+    String fechastr= Reloj.fecha(".");
+    String horastr= Reloj.hora(":");
     char fecha[11];
-    String fechastr= String(rtc.getDate())+"."+String(rtc.getMonth(Century))+"."+String(rtc.getYear());
     fechastr.toCharArray(fecha,11);
     char hora[9];
-    String horastr= String(rtc.getHour(h12, PM))+":"+String(rtc.getMinute())+":"+String(rtc.getSecond());
     horastr.toCharArray(hora,9);
     
     if(insertListener){
@@ -324,16 +350,20 @@ void imprimirDisponibleLN(String msg){
 void insertarRegistro(){
   insertListener = true;
   imprimirDisponibleLN("cronInsertarRegistro");
+  ultimaAccion = "["+Reloj.hora()+"] cronInsertarRegistro";
   Alarm.timerOnce(cronInsertarRegistro, insertarRegistro);
 }
 
 void insertarRegistroOnce(){
   insertListener = true;
   imprimirDisponibleLN("cronInsertarRegistro");
+  ultimaAccion = "["+Reloj.hora()+"] cronInsertarRegistro";
 }
 
 void copiarLog(){
-  String nombre = "/db/log"+String(day())+String(month())+String(year())+"-"+String(hour())+":"+String(minute())+":"+String(second())+".txt";
+  String fechastr= Reloj.fecha(".");
+   String horastr= Reloj.hora(":");
+  String nombre = "/db/log"+fechastr+"-"+horastr+".txt";
   char* dir;
   nombre.toCharArray(dir,29);
   dbFile = SD.open(db_name, FILE_READ);
@@ -355,5 +385,6 @@ void salvarLog(){
   copiarLog();
   borrarTodo();
   imprimirDisponibleLN("BACKUP");
+  ultimaAccion = "["+Reloj.hora()+"] BACKUP";
 }
 
